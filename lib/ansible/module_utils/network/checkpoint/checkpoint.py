@@ -48,6 +48,8 @@ checkpoint_argument_spec_for_commands = dict(
     version=dict(type='str')
 )
 
+delete_params = ['name', 'uid', 'layer', 'exception-group-name', 'layer', 'rule-name']
+
 
 # send the request to checkpoint
 def send_request(connection, version, url, payload=None):
@@ -74,6 +76,11 @@ def get_payload_from_parameters(params):
         if parameter_value and is_checkpoint_param(parameter):
             if isinstance(parameter_value, dict):
                 payload[parameter.replace("_", "-")] = get_payload_from_parameters(parameter_value)
+            elif isinstance(parameter_value, list) and len(parameter_value) != 0 and isinstance(parameter_value[0], dict):
+                payload_list = []
+                for element_dict in parameter_value:
+                    payload_list.append(get_payload_from_parameters(element_dict))
+                payload[parameter.replace("_", "-")] = payload_list
             else:
                 payload[parameter.replace("_", "-")] = parameter_value
     return payload
@@ -181,7 +188,7 @@ def api_call(module, api_call_object):
     payload = get_payload_from_parameters(module.params)
     connection = Connection(module._socket_path)
 
-    result = {'changed': False, 'checkpoint_session_uid': connection.get_session_uid()}
+    result = {'changed': False}
     if module.check_mode:
         return result
 
@@ -190,9 +197,14 @@ def api_call(module, api_call_object):
 
     payload_for_equals = {'type': api_call_object, 'params': payload}
     equals_code, equals_response = send_request(connection, version, 'equals', payload_for_equals)
+
+    result['checkpoint_session_uid'] = connection.get_session_uid()
+
     # if code is 400 (bad request) or 500 (internal error) - fail
     if equals_code == 400 or equals_code == 500:
         module.fail_json(msg=equals_response)
+    if equals_code == 404 and equals_response['code'] == 'generic_err_command_not_found':
+        module.fail_json(msg='Relevant hotfix is not installed on Check Point server. See sk114661 on Check Point Support Center.')
 
     if module.params['state'] == 'present':
         if equals_code == 200:
@@ -219,7 +231,8 @@ def api_call(module, api_call_object):
             result[api_call_object] = response
     elif module.params['state'] == 'absent':
         if equals_code == 200:
-            code, response = send_request(connection, version, 'delete-' + api_call_object, payload)
+            payload_for_delete = get_copy_payload_with_some_params(payload, delete_params)
+            code, response = send_request(connection, version, 'delete-' + api_call_object, payload_for_delete)
             if code != 200:
                 module.fail_json(msg=response)
 
@@ -272,6 +285,12 @@ def is_equals_with_position_param(payload, connection, version, api_call_object)
 
     payload_for_show_access_rulebase = {'name': payload['layer'], 'offset': position_number - 1, 'limit': 1}
     rulebase_command = 'show-' + api_call_object.split('-')[0] + '-rulebase'
+
+    # if it's threat-exception, we change a little the payload and the command
+    if api_call_object == 'threat-exception':
+        payload_for_show_access_rulebase['rule-name'] = payload['rule-name']
+        rulebase_command = 'show-threat-rule-exception-rulebase'
+
     code, response = send_request(connection, version, rulebase_command, payload_for_show_access_rulebase)
 
     # if true, it means there is no rule in the position that the user inserted, so I return false, and when we will try to set
@@ -329,7 +348,7 @@ def api_call_for_rule(module, api_call_object):
     payload = get_payload_from_parameters(module.params)
     connection = Connection(module._socket_path)
 
-    result = {'changed': False, 'checkpoint_session_uid': connection.get_session_uid()}
+    result = {'changed': False}
     if module.check_mode:
         return result
 
@@ -342,9 +361,14 @@ def api_call_for_rule(module, api_call_object):
         copy_payload_without_some_params = get_copy_payload_without_some_params(payload, ['position'])
     payload_for_equals = {'type': api_call_object, 'params': copy_payload_without_some_params}
     equals_code, equals_response = send_request(connection, version, 'equals', payload_for_equals)
+
+    result['checkpoint_session_uid'] = connection.get_session_uid()
+
     # if code is 400 (bad request) or 500 (internal error) - fail
     if equals_code == 400 or equals_code == 500:
         module.fail_json(msg=equals_response)
+    if equals_code == 404 and equals_response['code'] == 'generic_err_command_not_found':
+        module.fail_json(msg='Relevant hotfix is not installed on Check Point server. See sk114661 on Check Point Support Center.')
 
     if module.params['state'] == 'present':
         if equals_code == 200:
@@ -378,7 +402,8 @@ def api_call_for_rule(module, api_call_object):
             result[api_call_object] = response
     elif module.params['state'] == 'absent':
         if equals_code == 200:
-            code, response = send_request(connection, version, 'delete-' + api_call_object, payload)
+            payload_for_delete = get_copy_payload_with_some_params(payload, delete_params)
+            code, response = send_request(connection, version, 'delete-' + api_call_object, payload_for_delete)
             if code != 200:
                 module.fail_json(msg=response)
 

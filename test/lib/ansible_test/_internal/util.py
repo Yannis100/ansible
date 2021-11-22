@@ -16,7 +16,9 @@ import stat
 import string
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 
 from struct import unpack, pack
 from termios import TIOCGWINSZ
@@ -60,7 +62,6 @@ except AttributeError:
     MAXFD = -1
 
 COVERAGE_CONFIG_NAME = 'coveragerc'
-COVERAGE_OUTPUT_NAME = 'coverage'
 
 ANSIBLE_TEST_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -97,6 +98,19 @@ MODE_DIRECTORY_WRITE = MODE_DIRECTORY | stat.S_IWGRP | stat.S_IWOTH
 ENCODING = 'utf-8'
 
 Text = type(u'')
+
+REMOTE_ONLY_PYTHON_VERSIONS = (
+    '2.6',
+)
+
+SUPPORTED_PYTHON_VERSIONS = (
+    '2.6',
+    '2.7',
+    '3.5',
+    '3.6',
+    '3.7',
+    '3.8',
+)
 
 
 def to_optional_bytes(value, errors='strict'):  # type: (t.Optional[t.AnyStr], str) -> t.Optional[bytes]
@@ -279,9 +293,36 @@ def find_python(version, path=None, required=True):
     return python_bin
 
 
-def get_available_python_versions(versions):  # type: (t.List[str]) -> t.Tuple[str, ...]
-    """Return a tuple indicating which of the requested Python versions are available."""
-    return tuple(python_version for python_version in versions if find_python(python_version, required=False))
+def get_ansible_version():  # type: () -> str
+    """Return the Ansible version."""
+    try:
+        return get_ansible_version.version
+    except AttributeError:
+        pass
+
+    # ansible may not be in our sys.path
+    # avoids a symlink to release.py since ansible placement relative to ansible-test may change during delegation
+    load_module(os.path.join(ANSIBLE_LIB_ROOT, 'release.py'), 'ansible_release')
+
+    # noinspection PyUnresolvedReferences
+    from ansible_release import __version__ as ansible_version  # pylint: disable=import-error
+
+    get_ansible_version.version = ansible_version
+
+    return ansible_version
+
+
+def get_available_python_versions(versions):  # type: (t.List[str]) -> t.Dict[str, str]
+    """Return a dictionary indicating which of the requested Python versions are available."""
+    try:
+        return get_available_python_versions.result
+    except AttributeError:
+        pass
+
+    get_available_python_versions.result = dict((version, path) for version, path in
+                                                ((version, find_python(version, required=False)) for version in versions) if path)
+
+    return get_available_python_versions.result
 
 
 def generate_pip_command(python):
@@ -595,7 +636,7 @@ class Display:
         self.rows = 0
         self.columns = 0
         self.truncate = 0
-        self.redact = False
+        self.redact = True
         self.sensitive = set()
 
         if os.isatty(0):
@@ -662,6 +703,9 @@ class Display:
         """
         if self.redact and self.sensitive:
             for item in self.sensitive:
+                if not item:
+                    continue
+
                 message = message.replace(item, '*' * len(item))
 
         if truncate:
@@ -713,6 +757,7 @@ class SubprocessError(ApplicationError):
         super(SubprocessError, self).__init__(message)
 
         self.cmd = cmd
+        self.message = message
         self.status = status
         self.stdout = stdout
         self.stderr = stderr
@@ -777,8 +822,8 @@ def get_available_port():
 
 def get_subclasses(class_type):  # type: (t.Type[C]) -> t.Set[t.Type[C]]
     """Returns the set of types that are concrete subclasses of the given type."""
-    subclasses = set()
-    queue = [class_type]
+    subclasses = set()  # type: t.Set[t.Type[C]]
+    queue = [class_type]  # type: t.List[t.Type[C]]
 
     while queue:
         parent = queue.pop()
@@ -870,6 +915,22 @@ def load_module(path, name):  # type: (str, str) -> None
         with open(path, 'r') as module_file:
             # noinspection PyDeprecation
             imp.load_module(name, module_file, path, ('.py', 'r', imp.PY_SOURCE))
+
+
+@contextlib.contextmanager
+def tempdir():  # type: () -> str
+    """Creates a temporary directory that is deleted outside the context scope."""
+    temp_path = tempfile.mkdtemp()
+    yield temp_path
+    shutil.rmtree(temp_path)
+
+
+@contextlib.contextmanager
+def open_zipfile(path, mode='r'):
+    """Opens a zip file and closes the file automatically."""
+    zib_obj = zipfile.ZipFile(path, mode=mode)
+    yield zib_obj
+    zib_obj.close()
 
 
 display = Display()  # pylint: disable=locally-disabled, invalid-name

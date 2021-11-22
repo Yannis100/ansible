@@ -206,7 +206,14 @@ def parse_args():
     common.add_argument('--redact',
                         dest='redact',
                         action='store_true',
+                        default=True,
                         help='redact sensitive values in output')
+
+    common.add_argument('--no-redact',
+                        dest='redact',
+                        action='store_false',
+                        default=False,
+                        help='show sensitive values in output')
 
     common.add_argument('--check-python',
                         choices=SUPPORTED_PYTHON_VERSIONS,
@@ -389,6 +396,10 @@ def parse_args():
                                      metavar='VERSION',
                                      action='append',
                                      help='windows version').completer = complete_windows
+
+    windows_integration.add_argument('--inventory',
+                                     metavar='PATH',
+                                     help='path to inventory used for tests')
 
     units = subparsers.add_parser('units',
                                   parents=[test],
@@ -639,6 +650,10 @@ def add_environments(parser, tox_version=False, tox_only=False):
                               action='store_true',
                               help='run from the local environment')
 
+    environments.add_argument('--venv',
+                              action='store_true',
+                              help='run from ansible-test managed virtual environments')
+
     if data_context().content.is_ansible:
         if tox_version:
             environments.add_argument('--tox',
@@ -728,11 +743,11 @@ def add_extra_coverage_options(parser):
 
     parser.add_argument('--all',
                         action='store_true',
-                        help='include all python source files')
+                        help='include all python/powershell source files')
 
     parser.add_argument('--stub',
                         action='store_true',
-                        help='generate empty report of all python source files')
+                        help='generate empty report of all python/powershell source files')
 
 
 def add_httptester_options(parser, argparse):
@@ -884,7 +899,7 @@ def complete_network_testcase(prefix, parsed_args, **_):
     if len(parsed_args.include) != 1:
         return []
 
-    test_dir = 'test/integration/targets/%s/tests' % parsed_args.include[0]
+    test_dir = os.path.join(data_context().content.integration_targets_path, parsed_args.include[0], 'tests')
     connection_dirs = data_context().content.get_dirs(test_dir)
 
     for connection_dir in connection_dirs:

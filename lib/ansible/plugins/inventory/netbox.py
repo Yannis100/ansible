@@ -12,11 +12,14 @@ DOCUMENTATION = '''
         - Remy Leone (@sieben)
         - Anthony Ruhier (@Anthony25)
         - Nikhil Singh Baliyan (@nikkytub)
+        - Sander Steffann (@steffann)
+        - Yannis Ansermoz (@Yannis100)
     short_description: NetBox inventory source
     description:
         - Get inventory hosts from NetBox
     extends_documentation_fragment:
         - constructed
+        - inventory_cache
     options:
         plugin:
             description: token that ensures this is a source file for the 'netbox' plugin.
@@ -39,6 +42,16 @@ DOCUMENTATION = '''
                   region, site, role, platform, and/or tenant. Please check official netbox docs for more info.
             default: False
             type: boolean
+        vlans:
+            description: Get vlans in site group vars
+            type: boolean
+            default: False
+            version_added: "2.10"
+        interfaces:
+            description: Get interfaces of the device in host vars
+            type: boolean
+            default: False
+            version_added: "2.10"
         token:
             required: True
             description: NetBox token.
@@ -58,6 +71,7 @@ DOCUMENTATION = '''
                 - device_types
                 - manufacturers
                 - platforms
+                - regions
             default: []
         query_filters:
             description: List of parameters passed to the query string (Multiple values may be separated by commas)
@@ -71,6 +85,16 @@ DOCUMENTATION = '''
             description: List of custom ansible host vars to create from the device object fetched from NetBox
             default: {}
             type: dict
+        substr_group:
+            description: Length of group name prefix
+            type: int
+            default: 15
+            version_added: "2.10"
+        use_slugs:
+            description: Use slug instead of name for group name suffix
+            type: boolean
+            default: False
+            version_added: "2.10"
 '''
 
 EXAMPLES = '''
@@ -81,6 +105,8 @@ plugin: netbox
 api_endpoint: http://localhost:8000
 validate_certs: True
 config_context: False
+vlans: True
+interfaces: True
 group_by:
   - device_roles
 query_filters:
@@ -110,6 +136,9 @@ compose:
   foo: last_updated
   bar: display_name
   nested_variable: rack.display_name
+
+substr_group: 4
+use_slugs: True
 '''
 
 import json
@@ -118,12 +147,12 @@ from sys import version as python_version
 from threading import Thread
 from itertools import chain
 
-from ansible.plugins.inventory import BaseInventoryPlugin, Constructable
+from ansible.plugins.inventory import BaseInventoryPlugin, Constructable, Cacheable
 from ansible.module_utils.ansible_release import __version__ as ansible_version
 from ansible.errors import AnsibleError
 from ansible.module_utils._text import to_text
 from ansible.module_utils.urls import open_url
-from ansible.module_utils.six.moves.urllib.parse import urljoin, urlencode
+from ansible.module_utils.six.moves.urllib.parse import urlencode
 from ansible.module_utils.compat.ipaddress import ip_interface
 
 ALLOWED_DEVICE_QUERY_PARAMETERS = (
@@ -145,6 +174,8 @@ ALLOWED_DEVICE_QUERY_PARAMETERS = (
     "position",
     "rack_group_id",
     "rack_id",
+    "region",
+    "region_id",
     "role",
     "role_id",
     "serial",
@@ -158,21 +189,51 @@ ALLOWED_DEVICE_QUERY_PARAMETERS = (
 )
 
 
-class InventoryModule(BaseInventoryPlugin, Constructable):
+class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
     NAME = 'netbox'
 
     def _fetch_information(self, url):
-        response = open_url(url, headers=self.headers, timeout=self.timeout, validate_certs=self.validate_certs)
+        results = None
+        cache_key = self.get_cache_key(url)
 
-        try:
-            raw_data = to_text(response.read(), errors='surrogate_or_strict')
-        except UnicodeError:
-            raise AnsibleError("Incorrect encoding of fetched payload from NetBox API.")
+        # get the user's cache option to see if we should save the cache if it is changing
+        user_cache_setting = self.get_option('cache')
 
-        try:
-            return json.loads(raw_data)
-        except ValueError:
-            raise AnsibleError("Incorrect JSON payload: %s" % raw_data)
+        # read if the user has caching enabled and the cache isn't being refreshed
+        attempt_to_read_cache = user_cache_setting and self.use_cache
+
+        # attempt to read the cache if inventory isn't being refreshed and the user has caching enabled
+        if attempt_to_read_cache:
+            try:
+                results = self._cache[cache_key]
+                need_to_fetch = False
+            except KeyError:
+                # occurs if the cache_key is not in the cache or if the cache_key expired
+                # we need to fetch the URL now
+                need_to_fetch = True
+        else:
+            # not reading from cache so do fetch
+            need_to_fetch = True
+
+        if need_to_fetch:
+            self.display.v("Fetching: " + url)
+            response = open_url(url, headers=self.headers, timeout=self.timeout, validate_certs=self.validate_certs)
+
+            try:
+                raw_data = to_text(response.read(), errors='surrogate_or_strict')
+            except UnicodeError:
+                raise AnsibleError("Incorrect encoding of fetched payload from NetBox API.")
+
+            try:
+                results = json.loads(raw_data)
+            except ValueError:
+                raise AnsibleError("Incorrect JSON payload: %s" % raw_data)
+
+            # put result in cache if enabled
+            if user_cache_setting:
+                self._cache[cache_key] = results
+
+        return results
 
     def get_resource_list(self, api_url):
         """Retrieves resource list from netbox API.
@@ -208,7 +269,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             "platforms": self.extract_platform,
             "device_types": self.extract_device_type,
             "config_context": self.extract_config_context,
-            "manufacturers": self.extract_manufacturer
+            "interfaces": self.extract_interfaces,
+            "manufacturers": self.extract_manufacturer,
+            "regions": self.extract_region
         }
 
     def extract_disk(self, host):
@@ -222,7 +285,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     def extract_platform(self, host):
         try:
-            return [self.platforms_lookup[host["platform"]["id"]]]
+            return [self.platforms_slug_lookup[host["platform"]["id"]]] if self.use_slugs else [self.platforms_lookup[host["platform"]["id"]]]
         except Exception:
             return
 
@@ -240,7 +303,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     def extract_site(self, host):
         try:
-            return [self.sites_lookup[host["site"]["id"]]]
+            return [self.sites_slug_lookup[host["site"]["id"]]] if self.use_slugs else [self.sites_lookup[host["site"]["id"]]]
         except Exception:
             return
 
@@ -253,24 +316,55 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
     def extract_device_role(self, host):
         try:
             if 'device_role' in host:
-                return [self.device_roles_lookup[host["device_role"]["id"]]]
+                return [self.device_roles_slug_lookup[host["device_role"]["id"]]] if self.use_slugs else [self.device_roles_lookup[host["device_role"]["id"]]]
             elif 'role' in host:
-                return [self.device_roles_lookup[host["role"]["id"]]]
+                return [self.device_roles_slug_lookup[host["role"]["id"]]] if self.use_slugs else [self.device_roles_lookup[host["role"]["id"]]]
         except Exception:
             return
 
     def extract_config_context(self, host):
         try:
-            if self.config_context:
-                url = self.api_endpoint + "/api/dcim/devices/" + str(host["id"])
-                device_lookup = self._fetch_information(url)
-                return [device_lookup["config_context"]]
+            return [host["config_context"]]
+        except Exception:
+            return
+
+    def extract_interface_ip(self, interface_id):
+        try:
+            url = self.api_endpoint + "/api/ipam/ip-addresses/?limit=0&interface_id=" + str(interface_id)
+            interface_ips_lookup = self._fetch_information(url)
+            wanted_keys = ['address', 'family', 'tenant', 'vrf', 'status', 'role', 'tags']
+            interface_ips_short = []
+            for interface_ip_lookup in interface_ips_lookup['results']:
+                interface_ips_short.append(dict((k, interface_ip_lookup[k]) for k in wanted_keys if k in interface_ip_lookup))
+            return interface_ips_short
+        except Exception:
+            return
+
+    def extract_interfaces(self, host):
+        try:
+            if self.interfaces:
+                url = self.api_endpoint + "/api/dcim/interfaces/?limit=0&device_id=" + str(host["id"])
+                interfaces_lookup = self._fetch_information(url)
+                wanted_keys = ['description', 'enabled', 'lag', 'name', 'mode', 'tagged_vlans', 'untagged_vlan', 'tags', 'form_factor', 'ip']
+                interfaces_short = dict()
+                for interface_lookup in interfaces_lookup['results']:
+                    if interface_lookup['count_ipaddresses'] > 0:
+                        interface_lookup['ip'] = self.extract_interface_ip(interface_lookup['id'])
+                    interfaces_short[interface_lookup['name']] = (dict((k, interface_lookup[k]) for k in wanted_keys if k in interface_lookup))
+                return interfaces_short
         except Exception:
             return
 
     def extract_manufacturer(self, host):
         try:
-            return [self.manufacturers_lookup[host["device_type"]["manufacturer"]["id"]]]
+            return ([self.manufacturers_slug_lookup[host["device_type"]["manufacturer"]["id"]]]
+                    if self.use_slugs else [self.manufacturers_lookup[host["device_type"]["manufacturer"]["id"]]])
+        except Exception:
+            return
+
+    def extract_region(self, host):
+        try:
+            return [self.sites_region_slug_lookup[host["site"]["id"]]] if self.use_slugs else [self.sites_region_lookup[host["site"]["id"]]]
         except Exception:
             return
 
@@ -302,21 +396,27 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         url = self.api_endpoint + "/api/dcim/platforms/?limit=0"
         platforms = self.get_resource_list(api_url=url)
         self.platforms_lookup = dict((platform["id"], platform["name"]) for platform in platforms)
+        self.platforms_slug_lookup = dict((platform["id"], platform["slug"]) for platform in platforms)
 
     def refresh_sites_lookup(self):
         url = self.api_endpoint + "/api/dcim/sites/?limit=0"
         sites = self.get_resource_list(api_url=url)
         self.sites_lookup = dict((site["id"], site["name"]) for site in sites)
+        self.sites_slug_lookup = dict((site["id"], site["slug"]) for site in sites)
+        self.sites_region_lookup = dict((site["id"], site["region"]["name"]) for site in sites)
+        self.sites_region_slug_lookup = dict((site["id"], site["region"]["slug"]) for site in sites)
 
     def refresh_regions_lookup(self):
         url = self.api_endpoint + "/api/dcim/regions/?limit=0"
         regions = self.get_resource_list(api_url=url)
         self.regions_lookup = dict((region["id"], region["name"]) for region in regions)
+        self.regions_slug_lookup = dict((region["id"], region["slug"]) for region in regions)
 
     def refresh_tenants_lookup(self):
         url = self.api_endpoint + "/api/tenancy/tenants/?limit=0"
         tenants = self.get_resource_list(api_url=url)
         self.tenants_lookup = dict((tenant["id"], tenant["name"]) for tenant in tenants)
+        self.tenants_slug_lookup = dict((tenant["id"], tenant["slug"]) for tenant in tenants)
 
     def refresh_racks_lookup(self):
         url = self.api_endpoint + "/api/dcim/racks/?limit=0"
@@ -327,6 +427,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         url = self.api_endpoint + "/api/dcim/device-roles/?limit=0"
         device_roles = self.get_resource_list(api_url=url)
         self.device_roles_lookup = dict((device_role["id"], device_role["name"]) for device_role in device_roles)
+        self.device_roles_slug_lookup = dict((device_role["id"], device_role["slug"]) for device_role in device_roles)
 
     def refresh_device_types_lookup(self):
         url = self.api_endpoint + "/api/dcim/device-types/?limit=0"
@@ -337,9 +438,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         url = self.api_endpoint + "/api/dcim/manufacturers/?limit=0"
         manufacturers = self.get_resource_list(api_url=url)
         self.manufacturers_lookup = dict((manufacturer["id"], manufacturer["name"]) for manufacturer in manufacturers)
+        self.manufacturers_slug_lookup = dict((manufacturer["id"], manufacturer["slug"]) for manufacturer in manufacturers)
 
-    def refresh_lookups(self):
-        lookup_processes = (
+    @property
+    def lookup_processes(self):
+        return [
             self.refresh_sites_lookup,
             self.refresh_regions_lookup,
             self.refresh_tenants_lookup,
@@ -348,10 +451,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             self.refresh_platforms_lookup,
             self.refresh_device_types_lookup,
             self.refresh_manufacturers_lookup,
-        )
+        ]
 
+    def refresh_lookups(self):
         thread_list = []
-        for p in lookup_processes:
+        for p in self.lookup_processes:
             t = Thread(target=p)
             thread_list.append(t)
             t.start()
@@ -378,8 +482,12 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         if self.query_filters:
             query_parameters.extend(filter(lambda x: x,
                                            map(self.validate_query_parameters, self.query_filters)))
-        self.device_url = self.api_endpoint + "/api/dcim/devices/?" + urlencode(query_parameters)
-        self.virtual_machines_url = self.api_endpoint + "/api/virtualization/virtual-machines/?" + urlencode(query_parameters)
+        if self.config_context:
+            self.device_url = self.api_endpoint + "/api/dcim/devices/?" + urlencode(query_parameters)
+            self.virtual_machines_url = self.api_endpoint + "/api/virtualization/virtual-machines/?" + urlencode(query_parameters)
+        else:
+            self.device_url = self.api_endpoint + "/api/dcim/devices/?" + urlencode(query_parameters) + "&exclude=config_context"
+            self.virtual_machines_url = self.api_endpoint + "/api/virtualization/virtual-machines/?" + urlencode(query_parameters) + "&exclude=config_context"
 
     def fetch_hosts(self):
         return chain(
@@ -401,9 +509,10 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
                 continue
 
             for sub_group in sub_groups:
-                group_name = "_".join([group, sub_group])
+                group_name = "_".join([group[:self.substr], sub_group])
                 self.inventory.add_group(group=group_name)
-                self.inventory.add_host(group=group_name, host=hostname)
+                if group != "regions":
+                    self.inventory.add_host(group=group_name, host=hostname)
 
     def _fill_host_variables(self, host, hostname):
         for attribute, extractor in self.group_extractors.items():
@@ -420,6 +529,21 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         if self.extract_primary_ip6(host):
             self.inventory.set_variable(hostname, "primary_ip6", self.extract_primary_ip6(host=host))
 
+    def _fill_sites_vlans_group_variables(self, site_id):
+        try:
+            url = self.api_endpoint + "/api/ipam/vlans/?limit=0&site_id=" + str(site_id)
+            vlans_lookup = self._fetch_information(url)
+            wanted_keys = ['description', 'group', 'name', 'role', 'status', 'vid', 'tenant', 'tags']
+            vlans_short = []
+            for vlan_lookup in vlans_lookup['results']:
+                vlans_short.append(dict((k, vlan_lookup[k]) for k in wanted_keys if k in vlan_lookup))
+            group_name = "_".join(["sites"[:self.substr], str(self.sites_slug_lookup[site_id])])
+            self.inventory.add_group(group=group_name)
+            self.inventory.set_variable(group_name, "vlans", vlans_short)
+        except Exception as e:
+            print(e)
+            return
+
     def main(self):
         self.refresh_lookups()
         self.refresh_url()
@@ -427,24 +551,41 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
         for host in hosts_list:
             hostname = self.extract_name(host=host)
-            self.inventory.add_host(host=hostname)
-            self._fill_host_variables(host=host, hostname=hostname)
+            if 'virtual_chassis' in host and ((host['virtual_chassis'] is not None and host['virtual_chassis']['master']['id'] == host['id']) or host['virtual_chassis'] is None):
+                self.inventory.add_host(host=hostname)
+                self._fill_host_variables(host=host, hostname=hostname)
 
-            strict = self.get_option("strict")
+                strict = self.get_option("strict")
 
-            # Composed variables
-            self._set_composite_vars(self.get_option('compose'), host, hostname, strict=strict)
+                # Composed variables
+                self._set_composite_vars(self.get_option('compose'), host, hostname, strict=strict)
 
-            # Complex groups based on jinja2 conditionals, hosts that meet the conditional are added to group
-            self._add_host_to_composed_groups(self.get_option('groups'), host, hostname, strict=strict)
+                # Complex groups based on jinja2 conditionals, hosts that meet the conditional are added to group
+                self._add_host_to_composed_groups(self.get_option('groups'), host, hostname, strict=strict)
 
-            # Create groups based on variable values and add the corresponding hosts to it
-            self._add_host_to_keyed_groups(self.get_option('keyed_groups'), host, hostname, strict=strict)
-            self.add_host_to_groups(host=host, hostname=hostname)
+                # Create groups based on variable values and add the corresponding hosts to it
+                self._add_host_to_keyed_groups(self.get_option('keyed_groups'), host, hostname, strict=strict)
+                self.add_host_to_groups(host=host, hostname=hostname)
+
+        self.sgroup_by = set(self.group_by)
+        if "regions" in self.sgroup_by:
+            for region_id in self.regions_slug_lookup:
+                region_name = "_".join(["regions"[:self.substr], str(self.regions_slug_lookup[region_id])])
+                self.inventory.add_group(group=region_name)
+            for site_id in self.sites_slug_lookup:
+                region_name = "_".join(["regions"[:self.substr], str(self.sites_region_slug_lookup[site_id])])
+                site_name = "_".join(["sites"[:self.substr], str(self.sites_slug_lookup[site_id])])
+                self.inventory.add_group(group=site_name)
+                self.inventory.add_child(region_name, site_name)
+
+        if self.vlans:
+            for site in self.sites_slug_lookup:
+                self._fill_sites_vlans_group_variables(site_id=site)
 
     def parse(self, inventory, loader, path, cache=True):
         super(InventoryModule, self).parse(inventory, loader, path)
         self._read_config_data(path=path)
+        self.use_cache = cache
 
         # Netbox access
         token = self.get_option("token")
@@ -453,6 +594,8 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         self.timeout = self.get_option("timeout")
         self.validate_certs = self.get_option("validate_certs")
         self.config_context = self.get_option("config_context")
+        self.vlans = self.get_option("vlans")
+        self.interfaces = self.get_option("interfaces")
         self.headers = {
             'Authorization': "Token %s" % token,
             'User-Agent': "ansible %s Python %s" % (ansible_version, python_version.split(' ')[0]),
@@ -462,4 +605,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         # Filter and group_by options
         self.group_by = self.get_option("group_by")
         self.query_filters = self.get_option("query_filters")
+        self.substr = self.get_option("substr_group")
+        self.use_slugs = self.get_option("use_slugs")
         self.main()

@@ -272,7 +272,7 @@ class AnsibleContext(Context):
             for item in val:
                 if self._is_unsafe(item):
                     return True
-        elif isinstance(val, string_types) and hasattr(val, '__UNSAFE__'):
+        elif hasattr(val, '__UNSAFE__'):
             return True
         return False
 
@@ -350,12 +350,10 @@ class JinjaPluginIntercept(MutableMapping):
 
             for f in iteritems(method_map()):
                 fq_name = '.'.join((parent_prefix, f[0]))
+                # FIXME: detect/warn on intra-collection function name collisions
                 self._collection_jinja_func_cache[fq_name] = f[1]
 
-            function_impl = self._collection_jinja_func_cache[key]
-
-        # FIXME: detect/warn on intra-collection function name collisions
-
+        function_impl = self._collection_jinja_func_cache[key]
         return function_impl
 
     def __setitem__(self, key, value):

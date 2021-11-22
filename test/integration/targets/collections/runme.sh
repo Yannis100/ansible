@@ -7,7 +7,8 @@ export ANSIBLE_GATHERING=explicit
 export ANSIBLE_GATHER_SUBSET=minimal
 export ANSIBLE_HOST_PATTERN_MISMATCH=error
 
-# FIXME: just use INVENTORY_PATH as-is once ansible-test sets the right dir
+
+# FUTURE: just use INVENTORY_PATH as-is once ansible-test sets the right dir
 ipath=../../$(basename "${INVENTORY_PATH}")
 export INVENTORY_PATH="$ipath"
 
@@ -16,6 +17,10 @@ ANSIBLE_CALLBACK_WHITELIST=testns.testcoll.usercallback ansible localhost -m pin
 
 # test documentation
 ansible-doc testns.testcoll.testmodule -vvv | grep -- "- normal_doc_frag"
+
+# test adhoc default collection resolution (use unqualified collection module with playbook dir under its collection)
+echo "testing adhoc default collection support with explicit playbook dir"
+ANSIBLE_PLAYBOOK_DIR=./collection_root_user/ansible_collections/testns/testcoll ansible localhost -m testmodule
 
 echo "testing bad doc_fragments (expected ERROR message follows)"
 # test documentation failure
@@ -26,10 +31,13 @@ if [[ ${INVENTORY_PATH} == *.winrm ]]; then
   export TEST_PLAYBOOK=windows.yml
 else
   export TEST_PLAYBOOK=posix.yml
+
+  echo "testing default collection support"
+  ansible-playbook -i "${INVENTORY_PATH}" collection_root_user/ansible_collections/testns/testcoll/playbooks/default_collection_playbook.yml
 fi
 
 # run test playbook
-ansible-playbook -i "${INVENTORY_PATH}"  -i ./a.statichost.yml -v "${TEST_PLAYBOOK}"
+ansible-playbook -i "${INVENTORY_PATH}"  -i ./a.statichost.yml -v "${TEST_PLAYBOOK}" "$@"
 
 # test adjacent with --playbook-dir
 export ANSIBLE_COLLECTIONS_PATHS=''

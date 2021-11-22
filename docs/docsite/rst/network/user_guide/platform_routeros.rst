@@ -10,7 +10,6 @@ Connections Available
 ================================================================================
 
 .. table::
-    :widths: auto
     :class: documentation-table
 
     ====================  ==========================================
@@ -33,6 +32,8 @@ Connections Available
 
 .. |enable_mode| replace:: Enable Mode |br| (Privilege Escalation)
 
+
+RouterOS does not support ``ansible_connection: local``. You must use ``ansible_connection: network_cli``.
 
 Using CLI in Ansible
 ====================

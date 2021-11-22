@@ -365,7 +365,8 @@ def gather_vm_facts(content, vm):
     vmnet = _get_vm_prop(vm, ('guest', 'net'))
     if vmnet:
         for device in vmnet:
-            net_dict[device.macAddress] = list(device.ipAddress)
+            if device.deviceConfigId > 0:
+                net_dict[device.macAddress] = list(device.ipAddress)
 
     if vm.guest.ipAddress:
         if ':' in vm.guest.ipAddress:
@@ -526,12 +527,17 @@ def connect_to_api(module, disconnect_atexit=True, return_si=False):
     if validate_certs and not hasattr(ssl, 'SSLContext'):
         module.fail_json(msg='pyVim does not support changing verification mode with python < 2.7.9. Either update '
                              'python or use validate_certs=false.')
-
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-    if validate_certs:
+    elif validate_certs:
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
         ssl_context.verify_mode = ssl.CERT_REQUIRED
         ssl_context.check_hostname = True
         ssl_context.load_default_certs()
+    elif hasattr(ssl, 'SSLContext'):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
+        ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_context.check_hostname = False
+    else:  # Python < 2.7.9 or RHEL/Centos < 7.4
+        ssl_context = None
 
     service_instance = None
     proxy_host = module.params.get('proxy_host')
@@ -814,6 +820,26 @@ def wait_for_poweroff(vm, timeout=300):
         result['failed'] = True
         result['msg'] = 'Timeout while waiting for VM power off.'
     return result
+
+
+def is_integer(value, type_of='int'):
+    try:
+        VmomiSupport.vmodlTypes[type_of](value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def is_boolean(value):
+    if str(value).lower() in ['true', 'on', 'yes', 'false', 'off', 'no']:
+        return True
+    return False
+
+
+def is_truthy(value):
+    if str(value).lower() in ['true', 'on', 'yes']:
+        return True
+    return False
 
 
 class PyVmomi(object):

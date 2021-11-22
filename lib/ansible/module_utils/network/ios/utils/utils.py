@@ -30,29 +30,32 @@ def add_command_to_config_list(interface, cmd, commands):
 
 def dict_to_set(sample_dict):
     # Generate a set with passed dictionary for comparison
-    test_dict = {}
-    for k, v in iteritems(sample_dict):
-        if v is not None:
-            if isinstance(v, list):
-                if isinstance(v[0], dict):
+    test_dict = dict()
+    if isinstance(sample_dict, dict):
+        for k, v in iteritems(sample_dict):
+            if v is not None:
+                if isinstance(v, list):
+                    if isinstance(v[0], dict):
+                        li = []
+                        for each in v:
+                            for key, value in iteritems(each):
+                                if isinstance(value, list):
+                                    each[key] = tuple(value)
+                            li.append(tuple(iteritems(each)))
+                        v = tuple(li)
+                    else:
+                        v = tuple(v)
+                elif isinstance(v, dict):
                     li = []
-                    for each in v:
-                        for key, value in iteritems(each):
-                            if isinstance(value, list):
-                                each[key] = tuple(value)
-                        li.append(tuple(iteritems(each)))
+                    for key, value in iteritems(v):
+                        if isinstance(value, list):
+                            v[key] = tuple(value)
+                    li.extend(tuple(iteritems(v)))
                     v = tuple(li)
-                else:
-                    v = tuple(v)
-            elif isinstance(v, dict):
-                li = []
-                for key, value in iteritems(v):
-                    if isinstance(value, list):
-                        v[key] = tuple(value)
-                li.extend(tuple(iteritems(v)))
-                v = tuple(li)
-            test_dict.update({k: v})
-    return_set = set(tuple(iteritems(test_dict)))
+                test_dict.update({k: v})
+        return_set = set(tuple(iteritems(test_dict)))
+    else:
+        return_set = set(sample_dict)
     return return_set
 
 
@@ -60,7 +63,9 @@ def filter_dict_having_none_value(want, have):
     # Generate dict with have dict value which is None in want dict
     test_dict = dict()
     test_key_dict = dict()
-    test_dict['name'] = want.get('name')
+    name = want.get('name')
+    if name:
+        test_dict['name'] = name
     diff_ip = False
     want_ip = ''
     for k, v in iteritems(want):
@@ -75,20 +80,22 @@ def filter_dict_having_none_value(want, have):
                 if value is None:
                     dict_val = have.get(k).get(key)
                     test_key_dict.update({key: dict_val})
-                # below conditions checks are added to check if
-                # secondary IP is configured, if yes then delete
-                # the already configured IP if want and have IP
-                # is different else if it's same no need to delete
-                if isinstance(value, str):
-                    want_ip = value.split('/')
-                have_ip = have.get('ipv4')
-                if len(want_ip) > 1 and have_ip:
-                    have_ip = have_ip[0]['address'].split(' ')[0]
-                    if have_ip != want_ip[0]:
-                        diff_ip = True
-                if key == 'secondary' and value is True and diff_ip is True:
-                    test_key_dict.update({key: value})
                 test_dict.update({k: test_key_dict})
+            # below conditions checks are added to check if
+            # secondary IP is configured, if yes then delete
+            # the already configured IP if want and have IP
+            # is different else if it's same no need to delete
+            for each in v:
+                if each.get('secondary'):
+                    want_ip = each.get('address').split('/')
+                    have_ip = have.get('ipv4')
+                    if len(want_ip) > 1 and have_ip and have_ip[0].get('secondary'):
+                        have_ip = have_ip[0]['address'].split(' ')[0]
+                        if have_ip != want_ip[0]:
+                            diff_ip = True
+                    if each.get('secondary') and diff_ip is True:
+                        test_key_dict.update({'secondary': True})
+                    test_dict.update({'ipv4': test_key_dict})
         if v is None:
             val = have.get(k)
             test_dict.update({k: val})
@@ -131,6 +138,8 @@ def validate_ipv6(value, module):
 def validate_n_expand_ipv4(module, want):
     # Check if input IPV4 is valid IP and expand IPV4 with its subnet mask
     ip_addr_want = want.get('address')
+    if len(ip_addr_want.split(' ')) > 1:
+        return ip_addr_want
     validate_ipv4(ip_addr_want, module)
     ip = ip_addr_want.split('/')
     if len(ip) == 2:

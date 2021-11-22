@@ -342,6 +342,31 @@ CONDITIONAL_BARE_VARS:
   ini:
   - {key: conditional_bare_variables, section: defaults}
   version_added: "2.8"
+COVERAGE_REMOTE_OUTPUT:
+  name: Sets the output directory and filename prefix to generate coverage run info.
+  description:
+    - Sets the output directory on the remote host to generate coverage reports to.
+    - Currently only used for remote coverage on PowerShell modules.
+    - This is for internal use only.
+  env:
+  - {name: _ANSIBLE_COVERAGE_REMOTE_OUTPUT}
+  vars:
+  - {name: _ansible_coverage_remote_output}
+  type: str
+  version_added: '2.9'
+COVERAGE_REMOTE_WHITELIST:
+  name: Sets the list of paths to run coverage for.
+  description:
+  - A list of paths for files on the Ansible controller to run coverage for when executing on the remote host.
+  - Only files that match the path glob will have its coverage collected.
+  - Multiple path globs can be specified and are separated by ``:``.
+  - Currently only used for remote coverage on PowerShell modules.
+  - This is for internal use only.
+  default: '*'
+  env:
+  - {name: _ANSIBLE_COVERAGE_REMOTE_WHITELIST}
+  type: str
+  version_added: '2.9'
 ACTION_WARNINGS:
   name: Toggle action warnings
   default: True
@@ -667,6 +692,10 @@ DEFAULT_HASH_BEHAVIOUR:
   env: [{name: ANSIBLE_HASH_BEHAVIOUR}]
   ini:
   - {key: hash_behaviour, section: defaults}
+  deprecated:
+    why: This feature is fragile and not portable, leading to continual confusion and misuse
+    version: "2.13"
+    alternatives: the ``combine`` filter explicitly
 DEFAULT_HOST_LIST:
   name: Inventory Source
   default: /etc/ansible/hosts
@@ -1371,6 +1400,18 @@ GALAXY_TOKEN_PATH:
   - {key: token_path, section: galaxy}
   type: path
   version_added: "2.9"
+GALAXY_DISPLAY_PROGRESS:
+  default: ~
+  description:
+  - Some steps in ``ansible-galaxy`` display a progress wheel which can cause issues on certain displays or when
+    outputing the stdout to a file.
+  - This config option controls whether the display wheel is shown or not.
+  - The default is to show the display wheel if stdout has a tty.
+  env: [{name: ANSIBLE_GALAXY_DISPLAY_PROGRESS}]
+  ini:
+  - {key: display_progress, section: galaxy}
+  type: bool
+  version_added: "2.10"
 HOST_KEY_CHECKING:
   name: Check host keys
   default: True
@@ -1630,7 +1671,7 @@ PERSISTENT_CONNECT_TIMEOUT:
 PERSISTENT_CONNECT_RETRY_TIMEOUT:
   name: Persistence connection retry timeout
   default: 15
-  description: This controls the retry timeout for presistent connection to connect to the local domain socket.
+  description: This controls the retry timeout for persistent connection to connect to the local domain socket.
   env: [{name: ANSIBLE_PERSISTENT_CONNECT_RETRY_TIMEOUT}]
   ini:
   - {key: connect_retry_timeout, section: persistent_connection}
@@ -1638,11 +1679,19 @@ PERSISTENT_CONNECT_RETRY_TIMEOUT:
 PERSISTENT_COMMAND_TIMEOUT:
   name: Persistence command timeout
   default: 30
-  description: This controls the amount of time to wait for response from remote device before timing out presistent connection.
+  description: This controls the amount of time to wait for response from remote device before timing out persistent connection.
   env: [{name: ANSIBLE_PERSISTENT_COMMAND_TIMEOUT}]
   ini:
   - {key: command_timeout, section: persistent_connection}
   type: int
+PLAYBOOK_DIR:
+  name: playbook dir override for non-playbook CLIs (ala --playbook-dir)
+  version_added: "2.9"
+  description:
+    - A number of non-playbook CLIs have a ``--playbook-dir`` argument; this sets the default value for it.
+  env: [{name: ANSIBLE_PLAYBOOK_DIR}]
+  ini: [{key: playbook_dir, section: defaults}]
+  type: path
 PLAYBOOK_VARS_ROOT:
   name: playbook vars files root
   default: top

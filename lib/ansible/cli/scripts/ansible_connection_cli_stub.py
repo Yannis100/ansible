@@ -120,7 +120,7 @@ class ConnectionProcess(object):
 
     def run(self):
         try:
-            while True:
+            while not self.connection._conn_closed:
                 signal.signal(signal.SIGALRM, self.connect_timeout)
                 signal.signal(signal.SIGTERM, self.handler)
                 signal.alarm(self.connection.get_option('persistent_connect_timeout'))
@@ -138,7 +138,12 @@ class ConnectionProcess(object):
                     if log_messages:
                         display.display("jsonrpc request: %s" % data, log_only=True)
 
+                    request = json.loads(to_text(data, errors='surrogate_or_strict'))
+                    if request.get('method') == "exec_command" and not self.connection.connected:
+                        self.connection._connect()
+
                     signal.alarm(self.connection.get_option('persistent_command_timeout'))
+
                     resp = self.srv.handle_request(data)
                     signal.alarm(0)
 
@@ -191,6 +196,9 @@ class ConnectionProcess(object):
                     self.sock.close()
                 if self.connection:
                     self.connection.close()
+                    if self.connection.get_option("persistent_log_messages"):
+                        for _level, message in self.connection.pop_messages():
+                            display.display(message, log_only=True)
             except Exception:
                 pass
             finally:

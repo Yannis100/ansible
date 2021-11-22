@@ -24,7 +24,8 @@ description:
     - It uses the pyOpenSSL or cryptography python library to interact with OpenSSL. If both the
       cryptography and PyOpenSSL libraries are available (and meet the minimum version requirements)
       cryptography will be preferred as a backend over PyOpenSSL (unless the backend is forced with
-      C(select_crypto_backend))
+      C(select_crypto_backend)). Please note that the PyOpenSSL backend was deprecated in Ansible 2.9
+      and will be removed in Ansible 2.13.
 requirements:
     - PyOpenSSL >= 0.15 or cryptography >= 1.3
 author:
@@ -43,6 +44,8 @@ options:
             - The default choice is C(auto), which tries to use C(cryptography) if available, and falls back to C(pyopenssl).
             - If set to C(pyopenssl), will try to use the L(pyOpenSSL,https://pypi.org/project/pyOpenSSL/) library.
             - If set to C(cryptography), will try to use the L(cryptography,https://cryptography.io/) library.
+            - Please note that the C(pyopenssl) backend has been deprecated in Ansible 2.9, and will be removed in Ansible 2.13.
+              From that point on, only the C(cryptography) backend will be available.
         type: str
         default: auto
         choices: [ auto, cryptography, pyopenssl ]
@@ -79,6 +82,7 @@ basic_constraints:
     description: Entries in the C(basic_constraints) extension, or C(none) if extension is not present.
     returned: success
     type: list
+    elements: str
     sample: "[CA:TRUE, pathlen:1]"
 basic_constraints_critical:
     description: Whether the C(basic_constraints) extension is critical.
@@ -88,6 +92,7 @@ extended_key_usage:
     description: Entries in the C(extended_key_usage) extension, or C(none) if extension is not present.
     returned: success
     type: list
+    elements: str
     sample: "[Biometric Info, DVCS, Time Stamping]"
 extended_key_usage_critical:
     description: Whether the C(extended_key_usage) extension is critical.
@@ -96,7 +101,7 @@ extended_key_usage_critical:
 extensions_by_oid:
     description: Returns a dictionary for every extension OID
     returned: success
-    type: complex
+    type: dict
     contains:
         critical:
             description: Whether the extension is critical.
@@ -121,6 +126,7 @@ subject_alt_name:
     description: Entries in the C(subject_alt_name) extension, or C(none) if extension is not present.
     returned: success
     type: list
+    elements: str
     sample: "[DNS:www.ansible.com, IP:1.2.3.4]"
 subject_alt_name_critical:
     description: Whether the C(subject_alt_name) extension is critical.
@@ -145,6 +151,7 @@ subject_ordered:
     description: The CSR's subject as an ordered list of tuples.
     returned: success
     type: list
+    elements: list
     sample: '[["commonName", "www.example.com"], ["emailAddress": "test@example.com"]]'
     version_added: "2.9"
 public_key:
@@ -160,10 +167,46 @@ public_key_fingerprints:
     type: dict
     sample: "{'sha256': 'd4:b3:aa:6d:c8:04:ce:4e:ba:f6:29:4d:92:a3:94:b0:c2:ff:bd:bf:33:63:11:43:34:0f:51:b0:95:09:2f:63',
               'sha512': 'f7:07:4a:f0:b0:f0:e6:8b:95:5f:f9:e6:61:0a:32:68:f1..."
+subject_key_identifier:
+    description:
+        - The CSR's subject key identifier.
+        - The identifier is returned in hexadecimal, with C(:) used to separate bytes.
+        - Is C(none) if the C(SubjectKeyIdentifier) extension is not present.
+    returned: success and if the pyOpenSSL backend is I(not) used
+    type: str
+    sample: '00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33'
+    version_added: "2.9"
+authority_key_identifier:
+    description:
+        - The CSR's authority key identifier.
+        - The identifier is returned in hexadecimal, with C(:) used to separate bytes.
+        - Is C(none) if the C(AuthorityKeyIdentifier) extension is not present.
+    returned: success and if the pyOpenSSL backend is I(not) used
+    type: str
+    sample: '00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33'
+    version_added: "2.9"
+authority_cert_issuer:
+    description:
+        - The CSR's authority cert issuer as a list of general names.
+        - Is C(none) if the C(AuthorityKeyIdentifier) extension is not present.
+    returned: success and if the pyOpenSSL backend is I(not) used
+    type: list
+    elements: str
+    sample: "[DNS:www.ansible.com, IP:1.2.3.4]"
+    version_added: "2.9"
+authority_cert_serial_number:
+    description:
+        - The CSR's authority cert serial number.
+        - Is C(none) if the C(AuthorityKeyIdentifier) extension is not present.
+    returned: success and if the pyOpenSSL backend is I(not) used
+    type: int
+    sample: '12345'
+    version_added: "2.9"
 '''
 
 
 import abc
+import binascii
 import os
 import traceback
 from distutils.version import LooseVersion
@@ -259,6 +302,14 @@ class CertificateSigningRequestInfo(crypto_utils.OpenSSLObject):
         pass
 
     @abc.abstractmethod
+    def _get_subject_key_identifier(self):
+        pass
+
+    @abc.abstractmethod
+    def _get_authority_key_identifier(self):
+        pass
+
+    @abc.abstractmethod
     def _get_all_extensions(self):
         pass
 
@@ -284,6 +335,21 @@ class CertificateSigningRequestInfo(crypto_utils.OpenSSLObject):
         result['public_key'] = self._get_public_key(binary=False)
         pk = self._get_public_key(binary=True)
         result['public_key_fingerprints'] = crypto_utils.get_fingerprint_of_bytes(pk) if pk is not None else dict()
+
+        if self.backend != 'pyopenssl':
+            ski = self._get_subject_key_identifier()
+            if ski is not None:
+                ski = to_native(binascii.hexlify(ski))
+                ski = ':'.join([ski[i:i + 2] for i in range(0, len(ski), 2)])
+            result['subject_key_identifier'] = ski
+
+            aki, aci, acsn = self._get_authority_key_identifier()
+            if aki is not None:
+                aki = to_native(binascii.hexlify(aki))
+                aki = ':'.join([aki[i:i + 2] for i in range(0, len(aki), 2)])
+            result['authority_key_identifier'] = aki
+            result['authority_cert_issuer'] = aci
+            result['authority_cert_serial_number'] = acsn
 
         result['extensions_by_oid'] = self._get_all_extensions()
 
@@ -394,6 +460,23 @@ class CertificateSigningRequestInfoCryptography(CertificateSigningRequestInfo):
             serialization.PublicFormat.SubjectPublicKeyInfo
         )
 
+    def _get_subject_key_identifier(self):
+        try:
+            ext = self.csr.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+            return ext.value.digest
+        except cryptography.x509.ExtensionNotFound:
+            return None
+
+    def _get_authority_key_identifier(self):
+        try:
+            ext = self.csr.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
+            issuer = None
+            if ext.value.authority_cert_issuer is not None:
+                issuer = [crypto_utils.cryptography_decode_name(san) for san in ext.value.authority_cert_issuer]
+            return ext.value.key_identifier, issuer, ext.value.authority_cert_serial_number
+        except cryptography.x509.ExtensionNotFound:
+            return None, None, None
+
     def _get_all_extensions(self):
         return crypto_utils.cryptography_get_extensions_from_csr(self.csr)
 
@@ -449,7 +532,7 @@ class CertificateSigningRequestInfoPyOpenSSL(CertificateSigningRequestInfo):
             return None, False
 
     def _normalize_san(self, san):
-        # apperently openssl returns 'IP address' not 'IP' as specifier when converting the subjectAltName to string
+        # apparently openssl returns 'IP address' not 'IP' as specifier when converting the subjectAltName to string
         # although it won't accept this specifier when generating the CSR. (https://github.com/openssl/openssl/issues/4004)
         if san.startswith('IP Address:'):
             san = 'IP:' + san[len('IP Address:'):]
@@ -485,6 +568,14 @@ class CertificateSigningRequestInfoPyOpenSSL(CertificateSigningRequestInfo):
             except AttributeError:
                 self.module.warn('Your pyOpenSSL version does not support dumping public keys. '
                                  'Please upgrade to version 16.0 or newer, or use the cryptography backend.')
+
+    def _get_subject_key_identifier(self):
+        # Won't be implemented
+        return None
+
+    def _get_authority_key_identifier(self):
+        # Won't be implemented
+        return None, None, None
 
     def _get_all_extensions(self):
         return crypto_utils.pyopenssl_get_extensions_from_csr(self.csr)
@@ -542,6 +633,7 @@ def main():
             except AttributeError:
                 module.fail_json(msg='You need to have PyOpenSSL>=0.15')
 
+            module.deprecate('The module is using the PyOpenSSL backend. This backend has been deprecated', version='2.13')
             certificate = CertificateSigningRequestInfoPyOpenSSL(module)
         elif backend == 'cryptography':
             if not CRYPTOGRAPHY_FOUND:

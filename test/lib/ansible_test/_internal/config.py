@@ -44,6 +44,7 @@ class EnvironmentConfig(CommonConfig):
         super(EnvironmentConfig, self).__init__(args, command)
 
         self.local = args.local is True
+        self.venv = args.venv
 
         if args.tox is True or args.tox is False or args.tox is None:
             self.tox = args.tox is True
@@ -87,7 +88,7 @@ class EnvironmentConfig(CommonConfig):
         self.python_version = self.python or actual_major_minor
         self.python_interpreter = args.python_interpreter
 
-        self.delegate = self.tox or self.docker or self.remote
+        self.delegate = self.tox or self.docker or self.remote or self.venv
         self.delegate_args = []  # type: t.List[str]
 
         if self.delegate:
@@ -244,6 +245,17 @@ class IntegrationConfig(TestConfig):
         if self.list_targets:
             self.explain = True
 
+    def get_ansible_config(self):  # type: () -> str
+        """Return the path to the Ansible config for the given config."""
+        ansible_config_relative_path = os.path.join(data_context().content.integration_path, '%s.cfg' % self.command)
+        ansible_config_path = os.path.join(data_context().content.root, ansible_config_relative_path)
+
+        if not os.path.exists(ansible_config_path):
+            # use the default empty configuration unless one has been provided
+            ansible_config_path = super(IntegrationConfig, self).get_ansible_config()
+
+        return ansible_config_path
+
 
 class PosixIntegrationConfig(IntegrationConfig):
     """Configuration for the posix integration command."""
@@ -265,6 +277,7 @@ class WindowsIntegrationConfig(IntegrationConfig):
         super(WindowsIntegrationConfig, self).__init__(args, 'windows-integration')
 
         self.windows = args.windows  # type: t.List[str]
+        self.inventory = args.inventory  # type: str
 
         if self.windows:
             self.allow_destructive = True
@@ -314,6 +327,7 @@ class CoverageConfig(EnvironmentConfig):
         self.group_by = frozenset(args.group_by) if 'group_by' in args and args.group_by else set()  # type: t.FrozenSet[str]
         self.all = args.all if 'all' in args else False  # type: bool
         self.stub = args.stub if 'stub' in args else False  # type: bool
+        self.coverage = False  # temporary work-around to support intercept_command in cover.py
 
 
 class CoverageReportConfig(CoverageConfig):

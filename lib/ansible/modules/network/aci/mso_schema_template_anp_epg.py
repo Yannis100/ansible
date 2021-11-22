@@ -93,11 +93,12 @@ options:
     - The subnets associated to this ANP.
     type: list
     suboptions:
-      ip:
+      subnet:
         description:
         - The IP range in CIDR notation.
         type: str
         required: true
+        aliases: [ ip ]
       description:
         description:
         - The description of this subnet.
@@ -131,7 +132,7 @@ options:
     choices: [ enforced, unenforced ]
   intersite_multicaste_source:
     description:
-    - Whether intersite multicase source is enabled.
+    - Whether intersite multicast source is enabled.
     - When not specified, this parameter defaults to C(no).
     type: bool
   preferred_group:
